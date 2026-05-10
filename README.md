@@ -6,7 +6,7 @@ One-shot shell script that installs and configures **OpenLiteSpeed + MariaDB + P
 
 | Requirement | Details |
 |---|---|
-| OS | Debian 11 (Bullseye) or 12 (Bookworm) |
+| OS | Debian 11 (Bullseye), 12 (Bookworm), or 13 (Trixie) |
 | Access | Root / sudo |
 | RAM | 1 GB minimum (2 GB recommended) |
 | DNS | Domain A record pointing to the server (required for SSL only) |

@@ -50,6 +50,23 @@ fi
 # ─── Debian check ────────────────────────────────────────────────────────────
 [[ -f /etc/debian_version ]] || error "This script requires a Debian-based OS."
 
+# Determine Debian version (e.g. 11, 12, 13)
+DEBIAN_VERSION_ID="$(lsb_release -rs 2>/dev/null | cut -d. -f1)"
+DEBIAN_CODENAME="$(lsb_release -cs 2>/dev/null)"
+
+case "$DEBIAN_VERSION_ID" in
+    11) ;; # Bullseye
+    12) ;; # Bookworm
+    13) ;; # Trixie
+    *)
+        warn "Debian ${DEBIAN_VERSION_ID} (${DEBIAN_CODENAME}) is not officially tested."
+        warn "Supported versions: 11 (Bullseye), 12 (Bookworm), 13 (Trixie)."
+        read -r -p "Continue anyway? [y/N] " _REPLY
+        [[ "${_REPLY,,}" == "y" ]] || error "Aborted."
+        ;;
+esac
+info "Detected Debian ${DEBIAN_VERSION_ID} (${DEBIAN_CODENAME})"
+
 # ─── Generate passwords if not set ───────────────────────────────────────────
 generate_pass() { tr -dc 'A-Za-z0-9!@#%^&*()-_=+' </dev/urandom | head -c 24; }
 [[ -n "$MYSQL_ROOT_PASS" ]] || MYSQL_ROOT_PASS="$(generate_pass)"
