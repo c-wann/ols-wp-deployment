@@ -17,6 +17,56 @@ warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; exit 1; }
 section() { echo -e "\n${BOLD}${CYAN}=== $* ===${RESET}"; }
 
+# ─── Runtime flags ───────────────────────────────────────────────────────────
+VERBOSE_OUTPUT=true
+RESET_SITE=false
+CONFIG_FILE="config.env"
+CREDS_FILE="/root/.ols-wp-credentials"
+STATE_DIR="/root/.ols-wp-state"
+
+APT_FLAGS=()
+WGET_FLAGS=()
+CURL_FLAGS=()
+WP_CLI_DOWNLOAD_FLAGS=()
+
+apt_get() { apt-get "${APT_FLAGS[@]}" "$@"; }
+wget_cmd() { wget "${WGET_FLAGS[@]}" "$@"; }
+curl_cmd() { curl "${CURL_FLAGS[@]}" "$@"; }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            [[ -n "${2:-}" ]] || error "--config requires a file path."
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --verbose)
+            VERBOSE_OUTPUT=true
+            shift
+            ;;
+        --quiet)
+            VERBOSE_OUTPUT=false
+            shift
+            ;;
+        --reset-site|--cleanup)
+            RESET_SITE=true
+            shift
+            ;;
+        *)
+            error "Unknown argument: $1"
+            ;;
+    esac
+done
+
+if [[ "$VERBOSE_OUTPUT" == "false" ]]; then
+    APT_FLAGS=(-qq)
+    WGET_FLAGS=(-q)
+    CURL_FLAGS=(-fsSL)
+    WP_CLI_DOWNLOAD_FLAGS=(--quiet)
+else
+    CURL_FLAGS=(-fL)
+fi
+
 # ─── Defaults (override via config.env or environment) ───────────────────────
 : "${DOMAIN:=example.com}"
 : "${WP_ADMIN_USER:=admin}"
@@ -34,10 +84,6 @@ section() { echo -e "\n${BOLD}${CYAN}=== $* ===${RESET}"; }
 : "${WP_CLI_PATH:=/usr/local/bin/wp}"
 
 # ─── Load optional config file ───────────────────────────────────────────────
-CONFIG_FILE="config.env"
-if [[ "${1:-}" == "--config" && -f "${2:-}" ]]; then
-    CONFIG_FILE="$2"
-fi
 if [[ -f "$CONFIG_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$CONFIG_FILE"
@@ -73,6 +119,46 @@ if command -v lshttpd &>/dev/null; then
     IS_FIRST_RUN=false
 fi
 
+REQUESTED_DOMAIN="$DOMAIN"
+
+if [[ -f "$CREDS_FILE" ]]; then
+    SAVED_DOMAIN="$(awk -F= '/^DOMAIN=/{print $2; exit}' "$CREDS_FILE" 2>/dev/null || true)"
+    if [[ "$SAVED_DOMAIN" == "$REQUESTED_DOMAIN" ]]; then
+        # shellcheck disable=SC1090
+        source "$CREDS_FILE"
+        info "Loaded previous credentials from $CREDS_FILE"
+    fi
+fi
+
+mkdir -p "$STATE_DIR"
+STATE_FILE="${STATE_DIR}/${DOMAIN}.state"
+FAILED_MARKER="${STATE_DIR}/${DOMAIN}.failed"
+touch "$STATE_FILE"
+
+cleanup_state() {
+    local exit_code=$?
+    if [[ $exit_code -eq 0 ]]; then
+        rm -f "$FAILED_MARKER" "$STATE_FILE"
+    else
+        printf '%s\n' "$(date)" > "$FAILED_MARKER"
+        warn "Previous run marked as failed: $FAILED_MARKER"
+    fi
+}
+trap cleanup_state EXIT
+
+if [[ -f "$FAILED_MARKER" ]]; then
+    warn "Detected a previous failed run for ${DOMAIN}. Reusing saved credentials to continue."
+fi
+
+if [[ "$RESET_SITE" == "true" ]]; then
+    warn "Reset requested: removing existing site files for ${DOMAIN} before redeploying."
+    rm -rf "$WEBROOT"
+    rm -rf "$OLS_VHOST_DIR"
+    rm -f "$FAILED_MARKER"
+    sed -i "/virtualhost ${DOMAIN}/,/^}/d" /usr/local/lsws/conf/httpd_config.conf 2>/dev/null || true
+    sed -i "/map[[:space:]]\+${DOMAIN}[[:space:]]\+${DOMAIN}/d" /usr/local/lsws/conf/httpd_config.conf 2>/dev/null || true
+fi
+
 # ─── Generate passwords if not set ───────────────────────────────────────────
 generate_pass() { tr -dc 'A-Za-z0-9!@#%^&*()-_=+' </dev/urandom | head -c 24; }
 [[ -n "$MYSQL_ROOT_PASS" ]] || MYSQL_ROOT_PASS="$(generate_pass)"
@@ -80,7 +166,6 @@ generate_pass() { tr -dc 'A-Za-z0-9!@#%^&*()-_=+' </dev/urandom | head -c 24; }
 [[ -n "$OLS_ADMIN_PASS" ]]  || OLS_ADMIN_PASS="$(generate_pass)"
 
 # ─── Save generated credentials ──────────────────────────────────────────────
-CREDS_FILE="/root/.ols-wp-credentials"
 save_credentials() {
     cat > "$CREDS_FILE" <<EOF
 # OpenLiteSpeed + WordPress credentials
@@ -104,9 +189,9 @@ EOF
 # =============================================================================
 install_prerequisites() {
     section "Updating system and installing prerequisites"
-    apt-get update -qq
-    apt-get upgrade -y -qq
-    apt-get install -y -qq \
+    apt_get update
+    apt_get upgrade -y
+    apt_get install -y \
         curl wget gnupg2 lsb-release ca-certificates \
         software-properties-common apt-transport-https \
         unzip expect openssl ufw
@@ -125,12 +210,12 @@ install_openlitespeed() {
     fi
 
     # Add official LiteSpeed repo
-    wget -qO /tmp/repo.litespeed.sh https://repo.litespeed.sh
+    wget_cmd -O /tmp/repo.litespeed.sh https://repo.litespeed.sh
     bash /tmp/repo.litespeed.sh
     rm -f /tmp/repo.litespeed.sh
 
-    apt-get update -qq
-    apt-get install -y -qq openlitespeed
+    apt_get update
+    apt_get install -y openlitespeed
 
     success "OpenLiteSpeed installed"
 
@@ -165,9 +250,9 @@ install_php() {
         "lsphp${PHP_VERSION}-redis"
     )
 
-    apt-get install -y -qq "${PKGS[@]}" || {
+    apt_get install -y "${PKGS[@]}" || {
         warn "Some optional PHP extensions may not be available — installing core only"
-        apt-get install -y -qq \
+        apt_get install -y \
             "lsphp${PHP_VERSION}" \
             "lsphp${PHP_VERSION}-common" \
             "lsphp${PHP_VERSION}-mysql" \
@@ -193,7 +278,7 @@ install_mariadb() {
         return
     fi
 
-    apt-get install -y -qq mariadb-server mariadb-client
+    apt_get install -y mariadb-server mariadb-client
 
     systemctl enable --now mariadb
 
@@ -236,16 +321,16 @@ install_wordpress() {
 
     # Download via WP-CLI (installed below) or fall back to direct download
     if command -v wp &>/dev/null; then
-        wp core download --path="$WEBROOT" --allow-root --quiet
+        wp core download --path="$WEBROOT" --allow-root "${WP_CLI_DOWNLOAD_FLAGS[@]}"
     else
-        curl -sL https://wordpress.org/latest.tar.gz | tar -xz -C /tmp
+        curl_cmd -L https://wordpress.org/latest.tar.gz | tar -xz -C /tmp
         cp -r /tmp/wordpress/. "$WEBROOT/"
         rm -rf /tmp/wordpress
     fi
 
     # wp-config.php
     local SALT
-    SALT="$(curl -sL https://api.wordpress.org/secret-key/1.1/salt/)"
+    SALT="$(curl_cmd https://api.wordpress.org/secret-key/1.1/salt/)"
     cat > "${WEBROOT}/wp-config.php" <<PHP
 <?php
 define( 'DB_NAME',     '${WP_DB_NAME}' );
@@ -292,8 +377,7 @@ install_wpcli() {
         return
     fi
 
-    curl -sL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
-        -o "$WP_CLI_PATH"
+    curl_cmd -o "$WP_CLI_PATH" https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
     chmod +x "$WP_CLI_PATH"
 
     success "WP-CLI installed at $WP_CLI_PATH"
@@ -456,7 +540,7 @@ install_ssl() {
 
     section "Installing Let's Encrypt SSL for ${DOMAIN}"
 
-    apt-get install -y -qq certbot
+    apt_get install -y certbot
 
     # Stop OLS temporarily so certbot can bind port 80
     systemctl stop lsws
@@ -494,10 +578,10 @@ configure_firewall() {
     fi
 
     # Add rules (idempotent — already-added rules won't cause errors)
-    ufw allow ssh 2>/dev/null || true
-    ufw allow 80/tcp 2>/dev/null || true
-    ufw allow 443/tcp 2>/dev/null || true
-    ufw allow 7080/tcp 2>/dev/null || true
+    ufw allow ssh || true
+    ufw allow 80/tcp || true
+    ufw allow 443/tcp || true
+    ufw allow 7080/tcp || true
 
     # Enable if not already enabled
     if ! ufw status | grep -q "^Status: active"; then
@@ -537,7 +621,7 @@ run_wp_install() {
         --admin_email="$WP_ADMIN_EMAIL" \
         --admin_password="$(generate_pass)" \
         --skip-email \
-        --allow-root 2>/dev/null || \
+        --allow-root || \
         warn "WP-CLI core install skipped (may already be installed or DB not yet reachable via HTTP)"
 
     success "WordPress core install complete"

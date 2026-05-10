@@ -26,7 +26,13 @@ nano config.env
 sudo bash deploy.sh --config config.env
 ```
 
-Without a config file the script runs with sensible defaults (`example.com`, no SSL, auto-generated passwords).
+Without a config file the script runs with sensible defaults (`example.com`, no SSL, auto-generated passwords). The script now prints verbose output by default; use `--quiet` only if you want less terminal noise.
+
+Useful runtime flags:
+
+- `--verbose` keeps the default detailed output.
+- `--quiet` reduces package-install output.
+- `--reset-site` or `--cleanup` clears the current domain's webroot and vhost config before redeploying.
 
 ## Multi-site deployment
 
@@ -52,6 +58,8 @@ On subsequent runs:
 - ✅ New virtual host, database, and WordPress installation are created
 - ✅ All services are reloaded with the new configuration
 
+If a previous run failed for the same domain, the script reuses the saved credentials from `/root/.ols-wp-credentials` and writes a failed-run marker under `/root/.ols-wp-state` so you can rerun safely. If you want a clean reinstall for that domain, rerun with `--reset-site`.
+
 ## What the script does
 
 | Step | Action |
@@ -68,6 +76,10 @@ On subsequent runs:
 | 10 | Configures **UFW** firewall (first run: full reset; re-runs: preserves existing rules) |
 | 11 | Enables and starts services |
 | 12 | Runs `wp core install` to pre-configure the WP admin account |
+
+## Recovery
+
+If a deployment stops partway through, rerun the script with the same domain and config. It will reuse the previous credentials for that domain and continue with the remaining steps. Use `--reset-site` only when you want to remove the current domain's site files and rebuild that site from scratch.
 
 ## Configuration reference
 
