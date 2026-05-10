@@ -28,20 +28,44 @@ sudo bash deploy.sh --config config.env
 
 Without a config file the script runs with sensible defaults (`example.com`, no SSL, auto-generated passwords).
 
+## Multi-site deployment
+
+The script is designed to run multiple times on the same server to host multiple WordPress sites.
+
+**First site (full installation):**
+```bash
+sudo bash deploy.sh --config config.env
+```
+
+**Additional sites (only new vhost + database):**
+```bash
+# Create a new config for the additional site
+export DOMAIN="site2.com"
+export WP_DB_NAME="wordpress2"
+export WP_DB_USER="wpuser2"
+sudo bash deploy.sh
+```
+
+On subsequent runs:
+- ✅ System packages (OpenLiteSpeed, PHP, MariaDB) are skipped if already installed
+- ✅ Firewall rules are preserved and updated (not reset)
+- ✅ New virtual host, database, and WordPress installation are created
+- ✅ All services are reloaded with the new configuration
+
 ## What the script does
 
 | Step | Action |
 |---|---|
 | 1 | Updates system packages |
-| 2 | Adds the official LiteSpeed APT repo and installs **OpenLiteSpeed** |
-| 3 | Installs **lsphp** (default: PHP 8.4) with WordPress-required extensions |
-| 4 | Installs and secures **MariaDB** |
+| 2 | Adds the official LiteSpeed APT repo and installs **OpenLiteSpeed** (skipped on re-runs) |
+| 3 | Installs **lsphp** (default: PHP 8.4) with WordPress-required extensions (skipped on re-runs) |
+| 4 | Installs and secures **MariaDB** (skipped on re-runs) |
 | 5 | Creates the WordPress database and a dedicated DB user |
-| 6 | Installs **WP-CLI** |
+| 6 | Installs **WP-CLI** (skipped on re-runs) |
 | 7 | Downloads **WordPress** and writes `wp-config.php` |
 | 8 | Creates and registers an **OpenLiteSpeed virtual host** with WordPress rewrite rules |
 | 9 | (Optional) Requests a **Let's Encrypt** certificate via Certbot |
-| 10 | Configures **UFW** firewall (ports 22, 80, 443, 7080) |
+| 10 | Configures **UFW** firewall (first run: full reset; re-runs: preserves existing rules) |
 | 11 | Enables and starts services |
 | 12 | Runs `wp core install` to pre-configure the WP admin account |
 
@@ -68,6 +92,7 @@ All options can be set in `config.env` or exported as environment variables befo
 - **WordPress**: `http(s)://DOMAIN`
 - **OLS Admin panel**: `https://SERVER_IP:7080`
 - **Credentials file**: `/root/.ols-wp-credentials` (chmod 600)
+  - Contains credentials for all deployed sites (appended on each run)
 
 If WP-CLI core install was skipped (e.g. domain not yet resolving), visit `http://DOMAIN/wp-admin` to complete the WordPress setup wizard manually.
 

@@ -67,6 +67,12 @@ case "$DEBIAN_VERSION_ID" in
 esac
 info "Detected Debian ${DEBIAN_VERSION_ID} (${DEBIAN_CODENAME})"
 
+# ─── Detect if this is a re-run (multi-site scenario) ──────────────────────────
+IS_FIRST_RUN=true
+if command -v lshttpd &>/dev/null; then
+    IS_FIRST_RUN=false
+fi
+
 # ─── Generate passwords if not set ───────────────────────────────────────────
 generate_pass() { tr -dc 'A-Za-z0-9!@#%^&*()-_=+' </dev/urandom | head -c 24; }
 [[ -n "$MYSQL_ROOT_PASS" ]] || MYSQL_ROOT_PASS="$(generate_pass)"
@@ -410,11 +416,17 @@ virtualhost ${DOMAIN} {
 VHDEF
     fi
 
-    # Add listener mapping if not already present
+    # Add domain mapping to existing listeners instead of modifying Default
     if ! grep -q "map.*${DOMAIN}" "$HTTPD_CONF"; then
-        # Append domain to existing Default listener
-        sed -i "/listener Default {/,/}/ s/map.*$/&\n  map                     ${DOMAIN} ${DOMAIN}/" "$HTTPD_CONF" 2>/dev/null || true
-        # If that fails, add a new listener block
+        # Try to add to HTTP listener
+        if grep -q "listener HTTP {" "$HTTPD_CONF"; then
+            sed -i "/listener HTTP {/,/}/ s/^}/  map                     ${DOMAIN} ${DOMAIN}\n}/" "$HTTPD_CONF"
+        fi
+        # Try to add to HTTPS listener
+        if grep -q "listener HTTPS {" "$HTTPD_CONF"; then
+            sed -i "/listener HTTPS {/,/}/ s/^}/  map                     ${DOMAIN} ${DOMAIN}\n}/" "$HTTPD_CONF"
+        fi
+        # If neither exists, create them
         if ! grep -q "map.*${DOMAIN}" "$HTTPD_CONF"; then
             cat >> "$HTTPD_CONF" <<LSTN
 
@@ -474,14 +486,23 @@ install_ssl() {
 configure_firewall() {
     section "Configuring UFW firewall"
 
-    ufw --force reset
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow ssh
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    ufw allow 7080/tcp   # OLS admin panel
-    ufw --force enable
+    # Only reset firewall on first run; on re-runs, just add missing rules
+    if [[ "$IS_FIRST_RUN" == "true" ]]; then
+        ufw --force reset
+        ufw default deny incoming
+        ufw default allow outgoing
+    fi
+
+    # Add rules (idempotent — already-added rules won't cause errors)
+    ufw allow ssh 2>/dev/null || true
+    ufw allow 80/tcp 2>/dev/null || true
+    ufw allow 443/tcp 2>/dev/null || true
+    ufw allow 7080/tcp 2>/dev/null || true
+
+    # Enable if not already enabled
+    if ! ufw status | grep -q "^Status: active"; then
+        ufw --force enable
+    fi
 
     success "Firewall configured"
 }
@@ -560,7 +581,11 @@ print_summary() {
 main() {
     echo -e "${BOLD}${CYAN}"
     echo "  ╔═══════════════════════════════════════════════╗"
-    echo "  ║   OpenLiteSpeed + WordPress Deployment        ║"
+    if [[ "$IS_FIRST_RUN" == "true" ]]; then
+        echo "  ║   OpenLiteSpeed + WordPress Deployment        ║"
+    else
+        echo "  ║   OpenLiteSpeed + WordPress Add-Site          ║"
+    fi
     echo "  ║   Target: ${DOMAIN}"
     echo "  ╚═══════════════════════════════════════════════╝"
     echo -e "${RESET}"
